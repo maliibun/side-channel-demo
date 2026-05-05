@@ -1,13 +1,20 @@
 import { useState } from 'react';
 import TimingAttack from './pages/TimingAttack';
-import SimulatedTraces from './pages/SimulatedTraces';
-import RealTraces from './pages/RealTraces';
 import './App.css';
 
+function Placeholder({ name }) {
+  return (
+    <div style={{ padding: 24 }}>
+      <h2>{name}</h2>
+      <p style={{ color: '#888' }}>Coming in a later step.</p>
+    </div>
+  );
+}
+
 const TABS = [
-  { id: 'timing', label: 'Live timing attack',    render: () => <TimingAttack /> },
-  { id: 'sim',    label: 'Simulated traces (CPA)', render: () => <SimulatedTraces /> },
-  { id: 'real',   label: 'Real traces (ASCAD)',    render: () => <RealTraces /> },
+  { id: 'timing', label: 'Live timing attack', render: () => <TimingAttack /> },
+  { id: 'sim',    label: 'Simulated traces (CPA)', render: () => <Placeholder name="Simulated power traces" /> },
+  { id: 'real',   label: 'Real traces (ASCAD)', render: () => <Placeholder name="Real ASCAD traces" /> },
 ];
 
 export default function App() {
