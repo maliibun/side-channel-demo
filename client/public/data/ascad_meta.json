@@ -1,0 +1,1 @@
+{"n_traces": 2000, "n_samples": 700, "n_bytes": 16, "key": [43, 126, 21, 22, 40, 174, 210, 166, 171, 247, 21, 136, 9, 207, 79, 60], "leak_samples": [50, 90, 130, 170, 210, 250, 290, 330, 370, 410, 450, 490, 530, 570, 610, 650], "note": "synthetic ASCAD-format traces \u2014 same algorithm as real ASCAD"}
