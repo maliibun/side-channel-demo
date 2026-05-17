@@ -1,374 +1,516 @@
-<h1>side-channel-demo</h1>
-<p>Browser-based demo for side-channel attacks — extract keys from timing and power traces, no hardware required.<br>
-Includes a slide deck, live demo, and writeup.</p>
+# side-channel-demo
 
-<hr>
+Browser-based demo for side-channel attacks: extract AES keys from timing measurements and power traces, no specialised hardware required. The project is built around three interactive demos that progressively build up the story of how side channels leak secrets and how those leaks are exploited.
 
-<h2>Table of Contents</h2>
-<ol>
-  <li><a href="#1-the-attacks">The Attacks</a>
-    <ul>
-      <li><a href="#1a-timing-attack">1a. Timing Attack (live demo)</a></li>
-      <li><a href="#1b-simulated-power-traces-cpa">1b. Simulated Power Traces (CPA)</a></li>
-      <li><a href="#1c-real-traces-ascad">1c. Real Traces (ASCAD)</a></li>
-    </ul>
-  </li>
-  <li><a href="#2-architecture">Architecture</a></li>
-  <li><a href="#3-file-by-file-plan">File-by-file Plan</a></li>
-  <li><a href="#4-gotchas">Gotchas</a></li>
-  <li><a href="#5-build-order">Build Order</a></li>
-</ol>
+---
 
-<hr>
+## Table of contents
 
-<h2 id="1-the-attacks">1. The Attacks</h2>
+1. [Overview](#overview)
+2. [How to run](#how-to-run)
+3. [Project structure](#project-structure)
+4. [Concepts](#concepts)
+   - [AES in one minute](#aes-in-one-minute)
+   - [The AES S-box](#the-aes-s-box)
+   - [Hamming weight (HW)](#hamming-weight-hw)
+   - [Side channels](#side-channels)
+   - [Pearson correlation](#pearson-correlation)
+   - [CPA — correlation power analysis](#cpa--correlation-power-analysis)
+5. [Demo 1 — live timing attack](#demo-1--live-timing-attack)
+6. [Demo 2 — simulated power traces](#demo-2--simulated-power-traces)
+7. [Demo 3 — real ASCAD traces](#demo-3--real-ascad-traces)
+8. [Reading the plots](#reading-the-plots)
+9. [Important code blocks](#important-code-blocks)
+10. [Gotchas](#gotchas)
 
-<h3 id="1a-timing-attack">1a. Timing Attack (live demo)</h3>
+---
 
-<p>The vulnerable pattern is byte-by-byte string comparison with early exit:</p>
+## Overview
 
-<pre><code>function naiveCompare(a, b) {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i]) return false;   // early-exit leaks position
-  }
-  return true;
-}</code></pre>
+Three demos, three escalating levels of realism:
 
-<p>If you guess the first byte wrong, the loop exits after 1 iteration. If you get the first byte right but the second wrong, it exits after 2. Response time ≈ length of the matching prefix. That's the leak.</p>
+| Tab | What it shows | Where the data comes from |
+|---|---|---|
+| **Live timing attack** | Recover a 16-byte secret from response-time differences | Real network round-trips to a local Express server |
+| **Simulated traces (CPA)** | Recover one key byte from synthetic power traces using CPA | Generated in-browser with a known leak model |
+| **Real traces (ASCAD)** | Same CPA code, but applied to ASCAD-format traces from a real microcontroller | Preprocessed `.bin` files in `client/public/data/` |
 
-<h4>Recovery algorithm — byte-by-byte</h4>
-<ol>
-  <li>Fix bytes <code>0..i-1</code> to the prefix you've already recovered.</li>
-  <li>For each candidate <code>c ∈ 0..255</code> at position <code>i</code>, send the server <code>prefix || c || padding</code> N times, record server-side processing time.</li>
-  <li>The candidate with the highest <b>median</b> time is the correct byte. (Median, not mean — outliers from GC/scheduler dominate the mean.)</li>
-  <li>Append it to the prefix; repeat for <code>i+1</code>.</li>
-</ol>
+The point of running them side by side: the **algorithm** doesn't care whether the trace was made up in JavaScript or measured on real silicon. CPA is CPA.
 
-<blockquote>
-<b>Reality check:</b> Real network timing attacks against <code>hmac.compare</code> over the internet need millions of samples. In a 30-second demo you can't do that honestly. Two options:
-<ul>
-  <li><b>Amplify:</b> add a deliberate <code>busyWait(50µs)</code> per matching byte on the server. Tell the audience: "this amplifies a real effect; without it you'd need 10,000× more samples."</li>
-  <li><b>Localhost only:</b> with no network jitter, even unamplified leaks are recoverable with a few hundred samples per byte.</li>
-</ul>
-Recommended: do both — a slider sets the amplification, so you can show <i>off → noise → on → instant recovery</i>.
-</blockquote>
+---
 
-<hr>
+## How to run
 
-<h3 id="1b-simulated-power-traces-cpa">1b. Simulated Power Traces (CPA)</h3>
+Two terminals (both in WSL or any Unix shell — Windows-native works too if you prefer):
 
-<p>The CMOS leakage model: power drawn by a register loaded with value <code>v</code> is roughly proportional to <code>popcount(v)</code> — the Hamming Weight. For AES, the textbook attack point is the first-round S-box output:</p>
+```bash
+# Terminal 1 — the vulnerable + safe server
+cd server
+npm install            # one time
+node index.js          # listens on http://localhost:3001
 
-<pre><code>v = sbox[plaintext[i] XOR key[i]]
-power_at_leak_time ≈ HW(v) + noise</code></pre>
+# Terminal 2 — the React UI
+cd client
+npm install            # one time
+npm run dev            # serves http://localhost:5173
+```
 
-<p>To simulate: pick a key byte <code>k</code>, generate N random plaintexts <code>p</code>, and for each one create a fake "trace" — an array of ~100 samples — where one specific sample equals <code>HW(sbox[p XOR k]) + Gaussian(σ)</code> and the rest are random noise.</p>
+Open `http://localhost:5173`. Three tabs, three demos.
 
-<p><b>SPA</b> (Simple Power Analysis) = squinting at one trace and recognising structure. Mostly storytelling for the demo: "if rounds were visible you'd see 10 humps."</p>
+For demo 3 to work, the ASCAD `.bin` files need to be in `client/public/data/`. The repo ships a synthetic version that uses the same format. To regenerate from a real ASCAD `.h5` file:
 
-<p><b>CPA</b> (Correlation Power Analysis) is the real attack. For every candidate key guess <code>g ∈ 0..255</code>:</p>
+```bash
+pip install h5py numpy
+python preprocess_ascad.py path/to/ASCAD.h5
+```
 
-<pre><code>hypothesis_g = [ HW(sbox[p[t] XOR g])  for t in 0..N-1 ]
-correlation_g = pearson(hypothesis_g, traces[:, leak_sample])</code></pre>
+---
 
-<p>The correct <code>g</code> produces high correlation (~0.5–0.9 depending on noise); wrong guesses produce ~0. Plot <code>|corr|</code> over all 256 guesses → one bar towers above the rest.</p>
+## Project structure
 
-<blockquote>
-If you didn't know the leak sample, compute correlation at <i>every</i> sample point of the trace and find the peak. That's how you locate leaks in unknown hardware — worth showing as a heatmap.
-</blockquote>
+```
+side-channel-demo/
+├── preprocess_ascad.py             python script that crops ASCAD HDF5 → .bin
+├── server/
+│   ├── index.js                    express app, CORS, routes
+│   └── routes/
+│       ├── vulnerable.js           leaky byte-by-byte comparison
+│       └── safe.js                 crypto.timingSafeEqual control
+└── client/
+    ├── public/data/                preprocessed ASCAD traces (.bin + .json)
+    └── src/
+        ├── App.jsx                 three-tab shell
+        ├── components/
+        │   └── Chart.jsx           Plotly.react() wrapper
+        ├── lib/
+        │   ├── aes.js              SBOX + HW lookup tables
+        │   ├── cpa.js              CPA + synthetic trace generator
+        │   ├── plots.js            pure data builders for Plotly
+        │   └── timing.js           byte-by-byte timing recovery
+        └── pages/
+            ├── TimingAttack.jsx    demo 1
+            ├── SimulatedTraces.jsx demo 2
+            └── RealTraces.jsx      demo 3
+```
 
-<hr>
+The separation is intentional: `lib/` contains the math (no React, no DOM), `components/` contains UI primitives, `pages/` orchestrates state and renders. You can read any single layer without paging in the others.
 
-<h3 id="1c-real-traces-ascad">1c. Real Traces (ASCAD)</h3>
+---
 
-<p>ASCAD is the standard public dataset: real power measurements from an ATMega8515 running AES, packaged as HDF5. Same CPA code as 1b — that's the punchline. The simulation isn't a toy; it's the same algorithm.</p>
+## Concepts
 
-<p>HDF5 in the browser is painful. Preprocess offline: extract ~2000 traces × ~700 samples around the known leak window, dump as a raw <code>Float32Array</code> binary plus a <code>Uint8Array</code> of plaintexts (~5–10 MB total), loaded with <code>fetch → arrayBuffer() → typed-array view</code>. No HDF5 in the browser at all.</p>
+### AES in one minute
 
-<hr>
+AES (Advanced Encryption Standard) is a symmetric block cipher: it encrypts 16-byte blocks of plaintext into 16-byte blocks of ciphertext using a 16/24/32-byte key. It's the standard cipher behind HTTPS, disk encryption, Wi-Fi (WPA2), and almost every other modern security primitive.
 
-<h2 id="2-architecture">2. Architecture</h2>
+For our purposes, only the **first round** matters. AES-128 starts by:
 
-<pre>
-┌─────────────────────────────────────┐
-│  client/  (Vite + React, port 5173) │
-│    Tab 1: Timing Attack → server    │
-│    Tab 2: Simulated traces (pure JS)│
-│    Tab 3: Real traces (loads .bin)  │
-└─────────────┬───────────────────────┘
-              │ fetch POST /verify
-              ▼
-┌─────────────────────────────────────┐
-│  server/  (Express, port 3001)      │
-│    POST /vulnerable/verify          │
-│    POST /safe/verify    (control)   │
-│    POST /reset                      │
-└─────────────────────────────────────┘
-<<<<<<< HEAD
-<<<<<<< HEAD
-</pre>
+1. XOR'ing the 16-byte plaintext with the 16-byte key: `state[i] = plaintext[i] ^ key[i]`
+2. Replacing each byte through an S-box lookup: `state[i] = SBOX[state[i]]`
 
-<ul>
-  <li><b>Why split:</b> Tab 1 needs a real server to attack. Tabs 2 and 3 are pure client-side — you can demo them even if the server fails on stage.</li>
-  <li><b>Why Express:</b> ~30 lines of code, zero ceremony, everyone recognises it.</li>
-  <li><b>Communication:</b> REST. The attack is request-driven; WebSockets are unnecessary.</li>
-</ul>
+That `SBOX[plaintext[i] ^ key[i]]` operation is what every CPA attack targets, because it's where the secret key and the known plaintext combine to produce a byte that depends on **one** key byte at a time. That last property is critical: we can attack each of the 16 key bytes independently, trying 256 candidates per byte (4096 total guesses) instead of brute-forcing 2^128 keys.
 
-<hr>
+### The AES S-box
 
-<h2 id="3-file-by-file-plan">3. File-by-file Plan</h2>
+The S-box (`SBOX[]` in [`client/src/lib/aes.js`](client/src/lib/aes.js)) is a fixed 256-byte lookup table. The values are defined by FIPS 197 (the AES standard) and are identical across every AES implementation in the world.
 
-<h3>Server (<code>server/</code>)</h3>
+Mathematically, `SBOX[x] = AffineTransform(MultiplicativeInverse(x) in GF(2^8))`. The values look like random bytes but they are very carefully chosen for cryptographic properties:
 
-<table>
-  <thead>
-    <tr><th>File</th><th>Purpose</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><code>index.js</code></td>
-      <td>Entrypoint (~20 lines). CORS for <code>localhost:5173</code>, JSON body parsing, mounts <code>/vulnerable</code> and <code>/safe</code> routes, exposes <code>POST /reset</code> to regenerate the secret, accepts <code>amplificationUs</code> query param.</td>
-    </tr>
-    <tr>
-      <td><code>routes/vulnerable.js</code></td>
-      <td>Reads <code>{ guess }</code> from body, times comparison with <code>process.hrtime.bigint()</code>, uses <code>naiveCompare</code> with optional <code>busyWait</code>, returns <code>{ ok, serverTimeNs }</code>.</td>
-    </tr>
-    <tr>
-      <td><code>routes/safe.js</code></td>
-      <td>Same shape, uses <code>crypto.timingSafeEqual</code>. The control: same attack, no recovery.</td>
-    </tr>
-  </tbody>
-</table>
+- **High non-linearity** — resists linear and differential cryptanalysis
+- **No fixed points** — `SBOX[x] != x` for all x
+- **No opposite fixed points** — `SBOX[x] != x ^ 0xff`
 
-<blockquote><code>busyWait</code> uses <code>while (process.hrtime.bigint() - start < target)</code> — not <code>setTimeout</code>, which has ~1 ms resolution.</blockquote>
+If you swap the S-box for any other table, you no longer have AES. To attack real AES hardware, your CPA code must use these exact 256 bytes.
 
-<h3>Client (<code>client/</code>)</h3>
+### Hamming weight (HW)
 
-<table>
-  <thead>
-    <tr><th>File</th><th>Purpose</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><code>vite.config.js</code></td>
-      <td>Dev server proxy: <code>/api → localhost:3001</code> (avoids CORS in dev).</td>
-    </tr>
-    <tr>
-      <td><code>src/App.jsx</code></td>
-      <td>Tab state (<code>useState('timing' | 'sim' | 'real')</code>), renders one page component. ~30 lines.</td>
-    </tr>
-    <tr>
-      <td><code>src/pages/TimingAttack.jsx</code></td>
-      <td>Controls (target, samples-per-guess, amplification sliders, start/stop). Live bar chart of median times per candidate + recovered key hex display.</td>
-    </tr>
-    <tr>
-      <td><code>src/pages/SimulatedTraces.jsx</code></td>
-      <td>Controls (key byte, N traces, noise σ). Generates synthetic traces, runs CPA, renders: one sample trace, correlation bar chart, and a correlation heatmap.</td>
-    </tr>
-    <tr>
-      <td><code>src/pages/RealTraces.jsx</code></td>
-      <td>Loads <code>/data/ascad_subset.bin</code> once, runs same CPA, shows recovered vs ground-truth key byte.</td>
-    </tr>
-    <tr>
-      <td><code>src/lib/aes.js</code></td>
-      <td>Hardcoded <code>SBOX: Uint8Array(256)</code> and precomputed <code>HW: Uint8Array(256)</code> popcount table.</td>
-    </tr>
-    <tr>
-      <td><code>src/lib/cpa.js</code></td>
-      <td>Core CPA: <code>Float32Array</code>-based two-pass Pearson correlation, yields to UI every ~50 sample points for the heatmap path.</td>
-    </tr>
-    <tr>
-      <td><code>src/lib/timing.js</code></td>
-      <td>Attack driver: <code>recoverKey({ endpoint, keyLength, samples, onProgress })</code>.</td>
-    </tr>
-  </tbody>
-</table>
+The Hamming weight of a byte is its popcount — the number of 1-bits in its binary representation. `HW(0x00) = 0`, `HW(0xFF) = 8`, `HW(0b00101011) = 4`.
 
-<hr>
+In [`client/src/lib/aes.js`](client/src/lib/aes.js) we precompute the table once at startup:
 
-<h2 id="4-gotchas">4. Gotchas</h2>
+```js
+export const HW = new Uint8Array(256);
+for(let i = 0; i < 256; i++){
+    let v = i, c = 0;
+    while(v){ c += v & 1; v >>>= 1; }
+    HW[i] = c;
+}
+```
 
-<ul>
-  <li><b>CORS:</b> configure <code>cors({ origin: 'http://localhost:5173' })</code> from the start, not when the first request fails on stage.</li>
-  <li><b>Server-measured time:</b> measure with <code>hrtime.bigint()</code> on the server and return it. Client-side <code>Date.now()</code> includes network jitter and drowns the signal at micro-amplification levels.</li>
-  <li><b>Median, not mean:</b> GC pauses can be 10 ms+ — 1000× the signal. Use median or low percentile (e.g., min of 5).</li>
-  <li><b>Typed arrays for CPA:</b> always <code>Float32Array</code>, never <code>[]</code>. The inner loop is 50× slower with regular arrays due to boxed numbers.</li>
-  <li><b>Plotly weight:</b> ~3 MB. Use <code>Plotly.react()</code> semantics — reuse the layout object reference, or every update recreates the SVG.</li>
-  <li><b>Background-tab throttling:</b> Chrome throttles <code>setTimeout</code> to 1 Hz in inactive tabs. Keep the demo tab focused.</li>
-  <li><b>ASCAD file size:</b> don't ship the full HDF5 (~7 GB). Preprocess offline and ship only the slice you need.</li>
-  <li><b><code>hrtime.bigint()</code> returns BigInt:</b> doesn't <code>JSON.stringify</code> natively. Convert to string before sending, or use <code>Number()</code> (safe — values are nanoseconds, not picoseconds).</li>
-</ul>
+Why does HW matter for side channels? When a CMOS microcontroller loads a value `v` into a register, the power it draws is roughly proportional to how many bits flipped — and that's roughly proportional to `HW(v)`. So the power consumed at the moment AES computes `SBOX[plaintext ^ key]` correlates with the Hamming weight of that S-box output. That correlation is the leak.
 
-<hr>
+### Side channels
 
-<h2 id="5-build-order">5. Build Order</h2>
+A side channel is any unintended channel of information leakage from a computation. Classical channels include:
 
-<ol>
-  <li>Scaffold both packages (<code>npm create vite</code>, <code>npm init</code> in <code>server/</code>).</li>
-  <li>Get the timing endpoint working — verify with <code>curl</code> that an amplified response is measurably slower for a longer matching prefix. <b>Don't move on until this works in the terminal.</b></li>
-  <li>Write <code>lib/timing.js</code> and a minimal CLI test (Node script that runs the attack, prints recovered key) — proves the attack logic independently of the UI.</li>
-  <li>Build the React tab around it.</li>
-  <li>Write <code>lib/aes.js</code> and <code>lib/cpa.js</code>. Unit-test on a tiny synthetic case (4 traces, no noise, verify correlation = 1.0 for correct candidate).</li>
-  <li>Build the <b>SimulatedTraces</b> tab.</li>
-  <li>Preprocess ASCAD subset offline (Python + h5py → <code>.bin</code> files).</li>
-  <li>Build the <b>RealTraces</b> tab — mostly reuses CPA from step 5.</li>
-</ol>
+- **Timing** — how long an operation takes (the focus of demo 1)
+- **Power** — instantaneous current draw of the chip (demo 2 and 3)
+- **EM radiation** — electromagnetic emissions from the chip
+- **Cache** — which memory addresses were recently accessed
+- **Acoustic** — yes, really, key recovery from CPU fan noise has been demonstrated
 
-<blockquote>Each step is independently verifiable in isolation. When something breaks during prep, you know which layer.</blockquote>
-=======
-Why split: Tab 1 needs a real server to attack — that's the whole point. Tabs 2 and 3 are pure client-side; the server is irrelevant to them. Keeping them in separate packages means you can run just the client for trace demos if the server fails on stage.
-=======
-</pre>
->>>>>>> 1213b4d (readme clearup)
+The defining feature: the algorithm produces the correct output, but the *physical execution* reveals information about the secret data being processed.
 
-<ul>
-  <li><b>Why split:</b> Tab 1 needs a real server to attack. Tabs 2 and 3 are pure client-side — you can demo them even if the server fails on stage.</li>
-  <li><b>Why Express:</b> ~30 lines of code, zero ceremony, everyone recognises it.</li>
-  <li><b>Communication:</b> REST. The attack is request-driven; WebSockets are unnecessary.</li>
-</ul>
+### Pearson correlation
 
-<hr>
+Pearson's correlation coefficient measures the linear relationship between two equal-length sequences of numbers. It produces a value `r ∈ [-1, +1]`:
 
-<h2 id="3-file-by-file-plan">3. File-by-file Plan</h2>
+```
+        Σ (x_i - x̄)(y_i - ȳ)
+r  =  ─────────────────────────────
+       √( Σ(x_i - x̄)² · Σ(y_i - ȳ)² )
+```
 
-<h3>Server (<code>server/</code>)</h3>
+- `r = +1`: perfect positive linear relationship
+- `r =  0`: no linear relationship
+- `r = -1`: perfect negative linear relationship
 
-<table>
-  <thead>
-    <tr><th>File</th><th>Purpose</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><code>index.js</code></td>
-      <td>Entrypoint (~20 lines). CORS for <code>localhost:5173</code>, JSON body parsing, mounts <code>/vulnerable</code> and <code>/safe</code> routes, exposes <code>POST /reset</code> to regenerate the secret, accepts <code>amplificationUs</code> query param.</td>
-    </tr>
-    <tr>
-      <td><code>routes/vulnerable.js</code></td>
-      <td>Reads <code>{ guess }</code> from body, times comparison with <code>process.hrtime.bigint()</code>, uses <code>naiveCompare</code> with optional <code>busyWait</code>, returns <code>{ ok, serverTimeNs }</code>.</td>
-    </tr>
-    <tr>
-      <td><code>routes/safe.js</code></td>
-      <td>Same shape, uses <code>crypto.timingSafeEqual</code>. The control: same attack, no recovery.</td>
-    </tr>
-  </tbody>
-</table>
+In CPA we compute `|r|` (absolute correlation), because a strong **negative** correlation is also evidence of a real relationship — just one with an inverted sign (some chips draw *less* power on higher HW, depending on the architecture).
 
-<blockquote><code>busyWait</code> uses <code>while (process.hrtime.bigint() - start < target)</code> — not <code>setTimeout</code>, which has ~1 ms resolution.</blockquote>
+The implementation in [`client/src/lib/cpa.js`](client/src/lib/cpa.js) is straight from the formula:
 
-<h3>Client (<code>client/</code>)</h3>
+```js
+function pearson(xs, ys, n){
+    let sx = 0, sy = 0;
+    for(let i = 0; i < n; i++){ sx += xs[i]; sy += ys[i]; }
+    const mx = sx / n, my = sy / n;
+    let num = 0, dx2 = 0, dy2 = 0;
+    for(let i = 0; i < n; i++){
+        const dx = xs[i] - mx, dy = ys[i] - my;
+        num += dx * dy; dx2 += dx * dx; dy2 += dy * dy;
+    }
+    const denom = Math.sqrt(dx2 * dy2);
+    return denom === 0 ? 0 : num / denom;
+}
+```
 
-<table>
-  <thead>
-    <tr><th>File</th><th>Purpose</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><code>vite.config.js</code></td>
-      <td>Dev server proxy: <code>/api → localhost:3001</code> (avoids CORS in dev).</td>
-    </tr>
-    <tr>
-      <td><code>src/App.jsx</code></td>
-      <td>Tab state (<code>useState('timing' | 'sim' | 'real')</code>), renders one page component. ~30 lines.</td>
-    </tr>
-    <tr>
-      <td><code>src/pages/TimingAttack.jsx</code></td>
-      <td>Controls (target, samples-per-guess, amplification sliders, start/stop). Live bar chart of median times per candidate + recovered key hex display.</td>
-    </tr>
-    <tr>
-      <td><code>src/pages/SimulatedTraces.jsx</code></td>
-      <td>Controls (key byte, N traces, noise σ). Generates synthetic traces, runs CPA, renders: one sample trace, correlation bar chart, and a correlation heatmap.</td>
-    </tr>
-    <tr>
-      <td><code>src/pages/RealTraces.jsx</code></td>
-      <td>Loads <code>/data/ascad_subset.bin</code> once, runs same CPA, shows recovered vs ground-truth key byte.</td>
-    </tr>
-    <tr>
-      <td><code>src/lib/aes.js</code></td>
-      <td>Hardcoded <code>SBOX: Uint8Array(256)</code> and precomputed <code>HW: Uint8Array(256)</code> popcount table.</td>
-    </tr>
-    <tr>
-      <td><code>src/lib/cpa.js</code></td>
-      <td>Core CPA: <code>Float32Array</code>-based two-pass Pearson correlation, yields to UI every ~50 sample points for the heatmap path.</td>
-    </tr>
-    <tr>
-      <td><code>src/lib/timing.js</code></td>
-      <td>Attack driver: <code>recoverKey({ endpoint, keyLength, samples, onProgress })</code>.</td>
-    </tr>
-  </tbody>
-</table>
+Two passes: one to compute means, one to compute centred products. Pure arithmetic, no allocations inside the loops — that's why we use `Float32Array` everywhere.
 
-<hr>
+### CPA — correlation power analysis
 
-<h2 id="4-gotchas">4. Gotchas</h2>
+CPA combines everything above. Setup:
 
-<ul>
-  <li><b>CORS:</b> configure <code>cors({ origin: 'http://localhost:5173' })</code> from the start, not when the first request fails on stage.</li>
-  <li><b>Server-measured time:</b> measure with <code>hrtime.bigint()</code> on the server and return it. Client-side <code>Date.now()</code> includes network jitter and drowns the signal at micro-amplification levels.</li>
-  <li><b>Median, not mean:</b> GC pauses can be 10 ms+ — 1000× the signal. Use median or low percentile (e.g., min of 5).</li>
-  <li><b>Typed arrays for CPA:</b> always <code>Float32Array</code>, never <code>[]</code>. The inner loop is 50× slower with regular arrays due to boxed numbers.</li>
-  <li><b>Plotly weight:</b> ~3 MB. Use <code>Plotly.react()</code> semantics — reuse the layout object reference, or every update recreates the SVG.</li>
-  <li><b>Background-tab throttling:</b> Chrome throttles <code>setTimeout</code> to 1 Hz in inactive tabs. Keep the demo tab focused.</li>
-  <li><b>ASCAD file size:</b> don't ship the full HDF5 (~7 GB). Preprocess offline and ship only the slice you need.</li>
-  <li><b><code>hrtime.bigint()</code> returns BigInt:</b> doesn't <code>JSON.stringify</code> natively. Convert to string before sending, or use <code>Number()</code> (safe — values are nanoseconds, not picoseconds).</li>
-</ul>
+- We have `N` power traces (one per encryption) and `N` known plaintexts.
+- We don't know the key.
+- We model "power at the leak moment" as `HW(SBOX[plaintext ^ key])`.
 
-<hr>
+The attack on **one byte** of the key:
 
-<h2 id="5-build-order">5. Build Order</h2>
+```
+for each candidate g in 0..255:
+    hypothesis_g[t] = HW(SBOX[plaintext[t] ^ g])           for t in 0..N-1
+    for each sample point s in 0..T-1:
+        correlation = pearson(hypothesis_g[], traces[:, s])
+        record peak |correlation| across s
+pick g with the highest peak  →  that's the correct key byte
+```
 
-<ol>
-  <li>Scaffold both packages (<code>npm create vite</code>, <code>npm init</code> in <code>server/</code>).</li>
-  <li>Get the timing endpoint working — verify with <code>curl</code> that an amplified response is measurably slower for a longer matching prefix. <b>Don't move on until this works in the terminal.</b></li>
-  <li>Write <code>lib/timing.js</code> and a minimal CLI test (Node script that runs the attack, prints recovered key) — proves the attack logic independently of the UI.</li>
-  <li>Build the React tab around it.</li>
-  <li>Write <code>lib/aes.js</code> and <code>lib/cpa.js</code>. Unit-test on a tiny synthetic case (4 traces, no noise, verify correlation = 1.0 for correct candidate).</li>
-  <li>Build the <b>SimulatedTraces</b> tab.</li>
-  <li>Preprocess ASCAD subset offline (Python + h5py → <code>.bin</code> files).</li>
-  <li>Build the <b>RealTraces</b> tab — mostly reuses CPA from step 5.</li>
-</ol>
+Why does this work? Only **one** candidate `g` matches the real key. For that candidate, `HW(SBOX[plaintext ^ g])` matches the actual data flowing through the chip and therefore correlates strongly with the power at the leak sample. For every other candidate, the hypothesis is uncorrelated noise. Correlation reveals the key.
 
-<<<<<<< HEAD
-// traces: Float32Array of length N*S (row-major, N traces × S samples)
-// plaintexts: Uint8Array of length N (the byte being attacked)
-// returns: Float32Array(256) of |correlation| per candidate
-export function cpa(traces, plaintexts, N, S, sampleIdx) { ... }
-For one sample point: compute hypotheses (256 × N), compute correlation per candidate. ~30 lines using two-pass Pearson (mean, then variance, then covariance). Use Float32Array, no per-trace allocation.
+To recover all 16 key bytes, you run CPA 16 times, once per byte position.
 
-For the heatmap version, loop over sampleIdx. With N=2000, S=700, this is ~360M ops — ~0.5–2s in plain JS. Yield to the UI with await new Promise(r => setTimeout(r, 0)) every ~50 sample points.
+---
 
-src/lib/timing.js — the timing attack driver
+## Demo 1 — live timing attack
 
+### What's happening
 
-export async function recoverKey({ endpoint, keyLength, samples, onProgress }) { ... }
-Calls the server, collects timings, decides each byte, calls onProgress(prefix, candidateMedians) so the UI can render.
+A naive string comparison exits early on the first mismatch:
 
-src/components/
+```js
+function naiveCompare(a, b){
+    if(a.length !== b.length) return false;
+    for(let i = 0; i < a.length; i++){
+        if(a[i] !== b[i]) return false;   //early exit leaks position
+        busyWaitNs(amplificationNs);
+    }
+    return true;
+}
+```
 
-<TracePlot traces={Float32Array} sampleIdx={n} /> — wraps react-plotly.js
-<BarChart values={Float32Array(256)} highlightIdx={n} />
-<Slider />, <NumberInput /> — thin wrappers
-4. Gotchas that will bite
-CORS: configure cors({ origin: 'http://localhost:5173' }) from the start, not when the first request fails on stage.
-Server-measured vs client-measured time: measure on the server with hrtime.bigint() and return it. Client-side Date.now() includes network jitter and easily drowns the signal at micro-amplification levels. Then show "what the attacker actually sees" by switching to client-measured timing — it still works, just needs more samples.
-Median, not mean: GC pauses are 10ms+, can be 1000× the signal. Use median or low percentile (e.g., min of 5).
-Typed arrays for CPA: do not use []. The 256-candidate × N-trace inner loop will be 50× slower with regular arrays because of boxed numbers and bounds checks. Always Float32Array.
-Plotly is heavy: ~3 MB. Use react-plotly.js with Plotly.react() semantics — pass new data arrays but reuse the layout object reference, or every update re-creates the SVG.
-Background-tab throttling: Chrome throttles setTimeout to 1Hz in inactive tabs. Keep the demo tab focused; if you Cmd-Tab away the attack appears to freeze.
-ASCAD file size: don't ship the full HDF5 (~7 GB). Preprocess once, ship the slice you need.
-process.hrtime.bigint() returns BigInt: doesn't JSON.stringify natively. Convert to string before sending or use Number() if you're confident the values fit (they will — nanoseconds, not picoseconds).
-5. What you'd actually do in order
-Scaffold both packages (npm create vite, npm init in server/).
-Get the timing endpoint working — verify with curl that an amplified response is measurably slower for a longer matching prefix. Don't move on until this works in the terminal. If the leak isn't there, no UI in the world will save you.
-Write lib/timing.js and a minimal CLI test (a Node script that runs the attack against the local server, prints recovered key) — proves the attack logic separately from the UI.
-Build the React tab around it.
-Write lib/aes.js and lib/cpa.js. Unit-test on a tiny synthetic case (4 traces, no noise, see that the right candidate has correlation 1.0).
-Build SimulatedTraces tab.
-Preprocess ASCAD subset offline (Python script using h5py, dumps .bin files).
-Build RealTraces tab — mostly reuses CPA from step 5.
-The order matters: each step is independently verifiable in isolation, so when something breaks during prep you know which layer.
-</p>
->>>>>>> d1f26e0 (initial commit and time attack)
-=======
-<blockquote>Each step is independently verifiable in isolation. When something breaks during prep, you know which layer.</blockquote>
->>>>>>> 1213b4d (readme clearup)
+If you guess byte 0 wrong, the loop returns after 1 iteration. If byte 0 is right but byte 1 is wrong, it returns after 2. **Response time grows with the number of leading bytes that match the secret.** That's the leak.
+
+### The recovery algorithm
+
+In [`client/src/lib/timing.js`](client/src/lib/timing.js):
+
+```
+for each position p in 0..15:
+    for each candidate c in 0..255:
+        send (recovered_prefix || c || padding) N times, record server time
+        median_c = median of N timings
+    pick c with highest median_c  →  byte[p]
+```
+
+Median, not mean — because OS scheduler hiccups and JS garbage collection can spike a single sample by 1000× the actual signal. Median is robust to those outliers.
+
+### The amplification dial
+
+A real timing attack against `hmac.compare` over the internet needs millions of samples and serious statistics. We can't show that in a demo. So the server has an `amp` query parameter that inserts a deliberate `busyWait(amp ns)` per matching byte — making the timing signal artificially obvious:
+
+- `amp=100000` (100 µs/byte): instantly recoverable in seconds, even with 1 sample per candidate.
+- `amp=10000` (10 µs/byte): still recoverable but takes more samples.
+- `amp=0`: the *real* leak, drowning in OS jitter — usually fails.
+
+This is intellectually honest: we tell the audience "we're amplifying a real effect; without amplification you'd need thousands of times more samples."
+
+### The safe endpoint
+
+Same UI, same attack code, but switch the **Target** dropdown to "safe". The request hits `/safe/verify` instead of `/vulnerable/verify`. The safe endpoint uses Node's `crypto.timingSafeEqual`, which compares byte-by-byte with **no early exit** — the inner loop XORs every byte and accumulates the differences. Constant time. No matter how many bytes match, the response time is identical.
+
+The attack code runs unchanged; the bar chart looks like flat noise; the recovered key is random garbage. That's the fix every developer should know.
+
+### Reading the bar chart
+
+256 bars, one per candidate value at the current byte position. **Y-axis** = median response time in nanoseconds. The bar in red is the highest — that's the byte the attack is about to commit. With a vulnerable target and adequate amplification, one bar is visibly taller than the rest; with the safe endpoint, the bars are roughly equal-height and the "winner" is essentially random.
+
+---
+
+## Demo 2 — simulated power traces
+
+### Generating fake traces
+
+In [`client/src/lib/cpa.js`](client/src/lib/cpa.js), `generateSimTraces` builds N traces using the textbook HW leak model:
+
+```js
+export function generateSimTraces(keyByte, N, sigma, T = 100, leakSample = 50){
+    const traces = [];
+    const plaintexts = [];
+    for(let i = 0; i < N; i++){
+        const p = Math.random() * 256 | 0;
+        plaintexts.push(new Uint8Array([p]));
+        const trace = new Float32Array(T);
+        //fill with Gaussian-ish noise
+        for(let s = 0; s < T; s++) trace[s] = (Math.random() - 0.5) * 2 * sigma;
+        //inject the leak at one specific sample
+        trace[leakSample] += HW[SBOX[p ^ keyByte]];
+        traces.push(trace);
+    }
+    return {traces, plaintexts};
+}
+```
+
+Every trace is 100 floats of noise. At sample 50, one value gets bumped by `HW(SBOX[plaintext ^ key])` — a number between 0 and 8. That single bump is the **entire** leak. Buried under noise of magnitude σ, it's invisible to the naked eye.
+
+### Running CPA
+
+`runCPA` walks all 256 candidates, computes the hypothesis vector, correlates it against every sample column of the trace matrix, and records the peak per candidate:
+
+```js
+for(let g = 0; g < 256; g++){
+    //hypothesis: HW(SBOX[pt ^ g]) for each trace
+    for(let t = 0; t < N; t++) hyp[t] = HW[SBOX[plaintexts[t][byteIdx] ^ g]];
+
+    //correlate against each trace column
+    for(let s = 0; s < T; s++){
+        for(let t = 0; t < N; t++) col[t] = traces[t][s];
+        const r = Math.abs(pearson(hyp, col, N));
+        heatmap[g * T + s] = r;
+        if(r > peakCorr[g]) peakCorr[g] = r;
+    }
+}
+```
+
+The correct candidate `g = keyByte` produces a correlation of 0.5–0.9 at `s = 50` (the leak sample). All other candidates produce correlations near 0 everywhere. One spike in 256·100 = 25,600 grid cells.
+
+### Tweakable parameters
+
+- **Key byte** — what value to leak. Change it between runs; the recovered byte changes accordingly.
+- **N traces** — more traces sharpen the signal. With σ=2 you can recover at N=50; with σ=5 you might need N=500.
+- **Noise σ** — Gaussian noise amplitude added to every sample. Crank it high enough and even CPA gives up.
+
+The slider interactions are the lesson: side-channel attacks are statistical. More samples beat more noise, until they don't.
+
+---
+
+## Demo 3 — real ASCAD traces
+
+### What is ASCAD
+
+[ASCAD](https://github.com/ANSSI-FR/ASCAD) is the standard public dataset for side-channel research, published by the French national cybersecurity agency (ANSSI). It contains real power measurements from an ATMega8515 microcontroller running an AES-128 implementation: 60,000+ traces of ~100,000 samples each, packaged as HDF5.
+
+The dataset solves a practical problem for researchers: side-channel papers used to be reproducibility-hostile because every paper measured its own chip on its own oscilloscope. ASCAD gave the community a common reference.
+
+### Why HDF5 is preprocessed offline
+
+HDF5 in the browser is painful — the `h5wasm` library works but is heavy. Easier: preprocess offline with Python (`h5py`), crop the traces to the interesting window, and ship raw typed-array binaries. [`preprocess_ascad.py`](preprocess_ascad.py) does exactly this:
+
+- Reads `Profiling_traces/traces[:2000]` (2000 traces)
+- Crops to a 700-sample window around the centre (where the leak lives)
+- Writes `ascad_traces.bin` (Float32Array), `ascad_plaintexts.bin` (Uint8Array), and `ascad_meta.json` (key, dimensions)
+
+The browser loads these with `fetch` → `arrayBuffer()` → typed-array view. No HDF5 in the browser at all.
+
+### Same code, different data
+
+Once the data is in the right shape, the same `runCPA` function from demo 2 runs **completely unchanged**. The page in [`client/src/pages/RealTraces.jsx`](client/src/pages/RealTraces.jsx) just plumbs the data in:
+
+```js
+const result = await runCPA(traces, plaintexts, byteIdx, onProgress, signal);
+```
+
+That's the punchline: the simulated demo isn't a toy. CPA is the same algorithm whether you make the traces up in JavaScript or measure them on real silicon. The simulation is the algorithm; the silicon is just one source of input.
+
+### Locating the leak point
+
+In the simulated demo we know the leak is at sample 50 (we put it there). In real ASCAD data, we don't — we have to find it. After CPA runs we have a full `[256 × T]` heatmap of correlations. The leak sample is the column where the **correct** key candidate (ground truth) peaks. We compute it post-CPA in [`RealTraces.jsx`](client/src/pages/RealTraces.jsx):
+
+```js
+if(truth !== null){
+    const row = result.heatmap.subarray(truth * T, (truth + 1) * T);
+    setLeakSample(argMax(row));
+}
+```
+
+This is meta-nice: the trace plot shows a dotted vertical line at the leak sample, but only **after** CPA has run. The audience watches CPA discover the leak position, then sees the marker appear. The leak isn't a magic number from a config file — it falls out of the math.
+
+---
+
+## Reading the plots
+
+The three CPA-related plots tell different parts of the story.
+
+### Sample power trace
+
+A single trace as a line plot. The X-axis is sample index (time), Y-axis is power (arbitrary units). In the simulated demo, every trace looks like random noise; you cannot see the leak. That's the point — leaks are invisible to the naked eye, you need statistics. In the real ASCAD plot, you may see some structure (clock cycles, register operations).
+
+### Peak |correlation| per key guess
+
+256 bars, one per candidate key value. Y-axis is `|r|`, ranging 0 to 1. With CPA working, one bar towers above the rest. Coloured:
+
+- **Green** = ground truth (the actual key byte, when known)
+- **Red** = recovered (the candidate CPA picked)
+
+When green and red are on the same bar, the attack succeeded. When they're on different bars, the attack failed — usually due to too few traces or too much noise.
+
+### Correlation heatmap
+
+A 2-D heatmap: rows are key candidates (0–255), columns are sample indices (0 to T). Each cell shows the absolute correlation at that `(guess, sample)` pair. One row (the correct key) lights up at one column (the leak sample). That single bright cell is what CPA actually finds.
+
+The heatmap matters pedagogically because it shows **how** CPA locates leaks in unknown hardware: by scanning every sample point for the candidate that lights up. In a real attack you don't know the leak position in advance — the heatmap is the search.
+
+---
+
+## Important code blocks
+
+### `runCPA` — the core attack
+
+[`client/src/lib/cpa.js`](client/src/lib/cpa.js). For each of 256 candidates, build the hypothesis vector and correlate it against every trace column. Yields to the event loop every 16 candidates so the UI can repaint:
+
+```js
+for(let g = 0; g < 256; g++){
+    if(signal?.aborted) return null;
+    for(let t = 0; t < N; t++) hyp[t] = HW[SBOX[plaintexts[t][byteIdx] ^ g]];
+    for(let s = 0; s < T; s++){
+        for(let t = 0; t < N; t++) col[t] = traces[t][s];
+        const r = Math.abs(pearson(hyp, col, N));
+        heatmap[g * T + s] = r;
+        if(r > peakCorr[g]) peakCorr[g] = r;
+    }
+    if(g % 16 === 15){
+        onProgress?.(g, peakCorr, heatmap);
+        await new Promise(r => setTimeout(r, 0));
+    }
+}
+```
+
+Performance notes:
+- `hyp` and `col` are allocated **once**, outside the loops. Allocating inside would generate ~180k garbage typed-arrays per run on ASCAD-sized inputs.
+- `pearson` is a hand-rolled two-pass implementation. `Math.cov`/`Math.corr` don't exist; using a stats library would pull in megabytes.
+- The `await setTimeout(0)` between candidate batches is what keeps the page responsive — without it, the JS event loop is blocked for seconds and the browser thinks the tab is frozen.
+
+### `naiveCompare` and `busyWaitNs` — the leak
+
+[`server/routes/vulnerable.js`](server/routes/vulnerable.js):
+
+```js
+function busyWaitNs(targetNs){
+    if(targetNs <= 0n) return;
+    const start = process.hrtime.bigint();
+    while(process.hrtime.bigint() - start < targetNs){
+        //cpu spin, faster than setTimeout function
+    }
+}
+
+function naiveCompare(a, b, amplificationNs){
+    if(a.length !== b.length) return false;
+    for(let i = 0; i < a.length; i++){
+        if(a[i] !== b[i]) return false;   //early exit leak
+        busyWaitNs(amplificationNs);
+    }
+    return true;
+}
+```
+
+`process.hrtime.bigint()` returns nanoseconds as BigInt — orders of magnitude more precise than `Date.now()` (milliseconds). The `busyWaitNs` spin loop is required because `setTimeout` has ~1 ms resolution; we need microsecond control. CPU spinning is wasteful but accurate.
+
+### `recoverKey` — driving the timing attack
+
+[`client/src/lib/timing.js`](client/src/lib/timing.js):
+
+```js
+for(let pos = 0; pos < keyLength; pos++){
+    const medians = new Float64Array(256);
+    for(let candidate = 0; candidate < 256; candidate++){
+        const guess = new Uint8Array(keyLength);
+        guess.set(recovered.subarray(0, pos));
+        guess[pos] = candidate;
+        const samples = [];
+        for(let s = 0; s < samplesPerByte; s++){
+            const { ns } = await singleQuery(guess, ampNs, endpoint);
+            samples.push(ns);
+        }
+        medians[candidate] = median(samples);
+    }
+    let best = 0;
+    for(let i = 1; i < 256; i++) if(medians[i] > medians[best]) best = i;
+    recovered[pos] = best;
+}
+```
+
+Outer loop walks positions 0–15. Inner loops try all 256 candidates and average over a few samples. Median wins over mean because GC pauses and OS hiccups make the mean unreliable.
+
+### Chart abstraction
+
+[`client/src/components/Chart.jsx`](client/src/components/Chart.jsx) wraps `Plotly.react()` in a `useEffect` so React owns when redraws happen:
+
+```js
+export default function Chart({ data, layout, style }){
+    const ref = useRef(null);
+    useEffect(() => {
+        if(ref.current) Plotly.react(ref.current, data, {...BASE_LAYOUT, ...layout});
+    }, [data, layout]);
+    return <div ref={ref} style={{width: '100%', ...style}} />;
+}
+```
+
+`Plotly.react()` is Plotly's "create-or-update" API — first call creates the chart, subsequent calls diff and only redraw what changed. Without that, every state update would re-create the SVG from scratch, which is sluggish for the heatmap.
+
+### Plot data builders
+
+[`client/src/lib/plots.js`](client/src/lib/plots.js) contains pure functions that turn typed arrays into the JSON shapes Plotly expects. No React, no Plotly imports — just data shaping. This separation means the page components stay focused on state and UX; nothing Plotly-specific leaks into them.
+
+---
+
+## Gotchas
+
+These are the things that surprised me while building this — worth knowing if you're extending the project.
+
+- **CORS.** Different ports are different origins. The browser blocks cross-origin `fetch` responses by default. We add `cors({origin: 'http://localhost:5173'})` so the server permits the React dev server.
+- **Server-side timing, not client-side.** Measure with `process.hrtime.bigint()` on the server and return the elapsed nanoseconds in the response. Client-side timing includes network round-trip jitter, which often drowns the signal. Showing both side-by-side is a good lesson.
+- **Median, not mean.** A 10 ms GC pause is 1000× the timing signal. The mean is dominated by the worst sample; the median is dominated by the typical one.
+- **Typed arrays.** `Float32Array` is roughly 50× faster than `[]` for the CPA inner loop. Regular arrays box every number and hit polymorphic-inline-cache misses.
+- **WSL and Vite.** Vite running in WSL doesn't pick up file changes on the Windows filesystem via inotify. Enable `server.watch.usePolling` in `vite.config.js` or expect to refresh manually.
+- **Plotly + Vite.** Vanilla `react-plotly.js` has CommonJS/ESM interop issues under Vite. We use `plotly.js-dist-min` directly via `Plotly.react()` instead.
+- **`BigInt` and JSON.** `process.hrtime.bigint()` returns `BigInt`, which doesn't serialise to JSON. Convert to a string on the server, parse with `Number()` on the client (nanoseconds fit safely in a double, picoseconds wouldn't).
+- **Don't ship the full ASCAD HDF5** — it's ~7 GB. Preprocess offline, ship the slice you need.
+
+---
+
+## Further reading
+
+- **FIPS 197** — the AES specification (the SBOX table is in there).
+- **Kocher, Jaffe, Jun (1999)** — "Differential Power Analysis", the original paper introducing DPA. CPA is a refinement.
+- **Brier, Clavier, Olivier (2004)** — "Correlation Power Analysis with a Leakage Model", the CPA paper proper.
+- **ASCAD repository** — [https://github.com/ANSSI-FR/ASCAD](https://github.com/ANSSI-FR/ASCAD).
+- **"Lucky Thirteen"** — a real-world timing attack against TLS that needed tens of millions of requests. Useful context for how slow honest timing attacks really are.

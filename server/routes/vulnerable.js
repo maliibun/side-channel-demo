@@ -26,9 +26,7 @@ router.post('/verify', (req, res) => {
     const secret = req.app.locals.secret;
     const amp = BigInt(req.query.amp ?? 0);
 
-    let guessBuf;
-    try{ guessBuf = Buffer.from(guess, 'hex'); }
-    catch { return res.status(400).json({error: 'invalid hex'}); }
+    const guessBuf = Buffer.from(guess ?? '', 'hex');
 
     const start = process.hrtime.bigint();
     const ok = naiveCompare(guessBuf, secret, amp);
