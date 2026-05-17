@@ -1,49 +1,49 @@
 import { useState } from 'react';
 import { FaBolt, FaChartColumn, FaMicrochip } from 'react-icons/fa6';
+import ShaderBackground from './components/ShaderBackground';
+import LiquidGlassDefs from './components/LiquidGlassDefs';
+import TabNav from './components/TabNav';
+import { ExplainProvider } from './components/ExplainContext';
+import ExplainSidebar from './components/ExplainSidebar';
 import TimingAttack from './pages/TimingAttack';
 import SimulatedTraces from './pages/SimulatedTraces';
 import RealTraces from './pages/RealTraces';
-import './App.css';
 
 const TABS = [
-    {id: 'timing', label: 'Live timing attack',     icon: FaBolt,        render: () => <TimingAttack />},
-    {id: 'sim',    label: 'Simulated traces (CPA)', icon: FaChartColumn, render: () => <SimulatedTraces />},
-    {id: 'real',   label: 'Real traces (ASCAD)',    icon: FaMicrochip,   render: () => <RealTraces />},
+    {id: 'timing', title: 'Live timing attack', sub: 'naive compare', icon: FaBolt},
+    {id: 'sim',    title: 'Simulated traces',   sub: 'CPA',           icon: FaChartColumn},
+    {id: 'real',   title: 'Real traces',        sub: 'ASCAD',         icon: FaMicrochip},
 ];
 
 export default function App(){
     const [tab, setTab] = useState('timing');
-    const active = TABS.find(t => t.id === tab);
 
     return (
-        <div style={{fontFamily: 'system-ui, -apple-system, sans-serif', maxWidth: 1100, margin: '0 auto'}}>
-            <header style={{padding: '16px 24px', borderBottom: '1px solid #ddd'}}>
-                <h1 style={{margin: 0, fontSize: 22}}>Side-channel demo</h1>
-            </header>
-            <nav style={{display: 'flex', borderBottom: '1px solid #ddd'}}>
-                {TABS.map(t => {
-                    const Icon = t.icon;
-                    return (
-                        <button
-                            key={t.id}
-                            onClick={() => setTab(t.id)}
-                            style={{
-                                display: 'flex', alignItems: 'center', gap: 8,
-                                padding: '12px 20px',
-                                border: 'none',
-                                background: tab === t.id ? '#fff' : '#f5f5f5',
-                                borderBottom: tab === t.id ? '2px solid #333' : '2px solid transparent',
-                                cursor: 'pointer',
-                                fontWeight: tab === t.id ? 600 : 400,
-                                fontSize: 14,
-                            }}
-                        >
-                            <Icon /> {t.label}
-                        </button>
-                    );
-                })}
-            </nav>
-            {active.render()}
-        </div>
+        <ExplainProvider>
+            <ShaderBackground />
+            <LiquidGlassDefs />
+            <div className="shell">
+                <div className="workspace">
+                    <main className="panel">
+                        <div className="panel__top">
+                            <div className="panel__title">
+                                <h1>Side-channel demo</h1>
+                                <span className="panel__sub mono">recovering secrets from timing &amp; power</span>
+                            </div>
+                            <TabNav tabs={TABS} active={tab} onChange={setTab} />
+                        </div>
+                        <div className="panel__body">
+                            {tab === 'timing' && <TimingAttack />}
+                            {tab === 'sim'    && <SimulatedTraces />}
+                            {tab === 'real'   && <RealTraces />}
+                        </div>
+                    </main>
+                    <ExplainSidebar />
+                </div>
+                <p className="foot mono">Educational demonstrations only · no real keys are at risk</p>
+            </div>
+            {/* portal target for ControlBar */}
+            <div id="controlbar" />
+        </ExplainProvider>
     );
 }

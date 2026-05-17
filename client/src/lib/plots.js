@@ -17,14 +17,20 @@ export function keyGuessBars(values, highlights = {}, baseColor = '#3498db'){
     }];
 }
 
-export function heatmap(flat, rows, cols, colorscale = 'Viridis'){
+//options: {colorscale, zmin, zmax}
+//pass zmin to clip the noise floor so peaks stand out instead of getting washed away
+export function heatmap(flat, rows, cols, options = {}){
+    const { colorscale = 'Viridis', zmin, zmax } = options;
     const z = new Array(rows);
     for(let r = 0; r < rows; r++){
         const row = new Array(cols);
         for(let c = 0; c < cols; c++) row[c] = flat[r * cols + c];
         z[r] = row;
     }
-    return [{type: 'heatmap', z, colorscale, showscale: true}];
+    const trace = {type: 'heatmap', z, colorscale, showscale: true};
+    if(zmin !== undefined) trace.zmin = zmin;
+    if(zmax !== undefined) trace.zmax = zmax;
+    return [trace];
 }
 
 //layout fragment for a vertical marker line + label at sample index x
@@ -45,4 +51,12 @@ export function argMax(arr){
     let m = 0;
     for(let i = 1; i < arr.length; i++) if(arr[i] > arr[m]) m = i;
     return m;
+}
+
+//Math.max(...bigArray) throws RangeError past the engine's arg-spread limit
+//(~32k-500k depending on the engine). Loop is safe at any size.
+export function maxOf(arr){
+    let max = -Infinity;
+    for(let i = 0; i < arr.length; i++) if(arr[i] > max) max = arr[i];
+    return max;
 }
